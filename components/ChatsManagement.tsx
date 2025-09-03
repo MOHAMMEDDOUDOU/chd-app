@@ -19,6 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import { CloudinaryService } from '../lib/cloudinary';
 import { useUser } from '../lib/userContext';
 import { listAdminConversations, listMessages, sendMessage, getOrCreateAdminConversation } from '../lib/conversations';
 
@@ -36,7 +37,8 @@ export default function ChatsManagement(_: Props) {
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
-  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [showAttachments, setShowAttachments] = useState(false);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
 
   useEffect(() => {
     loadConversations();
@@ -48,13 +50,10 @@ export default function ChatsManagement(_: Props) {
 
     const refreshMessages = async () => {
       try {
-        setLoadingMessages(true);
         const msgs = await listMessages(selectedConversation.id, 200, 0);
         setMessages(msgs);
       } catch (error) {
         console.error('Error refreshing messages:', error);
-      } finally {
-        setLoadingMessages(false);
       }
     };
 
@@ -231,9 +230,113 @@ export default function ChatsManagement(_: Props) {
     }
   };
 
+  const pickImage = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        await sendMediaMessage(result.assets[0].uri, 'image');
+      }
+    } catch (error) {
+      Alert.alert('خطأ', 'فشل في اختيار الصورة');
+    }
+  };
+
+  const pickVideo = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        allowsEditing: true,
+        aspect: [16, 9],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        await sendMediaMessage(result.assets[0].uri, 'video', result.assets[0].duration);
+      }
+    } catch (error) {
+      Alert.alert('خطأ', 'فشل في اختيار الفيديو');
+    }
+  };
+
+  const sendMediaMessage = async (uri: string, type: 'image' | 'video', duration?: number) => {
+    if (!selectedConversation?.id || !user?.id) return;
+    
+    setUploadingMedia(true);
+    try {
+      // رفع الملف إلى Cloudinary
+      const fileUrl = await CloudinaryService.uploadImage(uri, 'chat-media');
+      
+      const msg = await sendMessage({
+        conversationId: selectedConversation.id,
+        senderId: user.id,
+        receiverId: selectedConversation.userId,
+        messageType: type,
+        messageContent: type === 'image' ? '📷 صورة' : '🎥 فيديو',
+        fileUrl,
+        fileName: `${type}_${Date.now()}.${type === 'image' ? 'jpg' : 'mp4'}`,
+        duration: duration ? Math.round(duration / 1000) : undefined,
+      });
+      
+      setMessages(prev => [...prev, { 
+        ...msg, 
+        sender: { 
+          id: user.id, 
+          fullName: user.fullName, 
+          username: user.username, 
+          profileImageUrl: user.profileImageUrl 
+        } 
+      }]);
+      
+      setShowAttachments(false);
+    } catch (error) {
+      Alert.alert('خطأ', 'فشل في إرسال الملف');
+    } finally {
+      setUploadingMedia(false);
+    }
+  };
+
   const renderMessage = ({ item }: { item: any }) => {
     const isMine = item.senderId === user?.id;
     
+    const renderMessageContent = () => {
+      switch (item.messageType) {
+        case 'image':
+          return (
+            <View style={styles.mediaContainer}>
+              <Image source={{ uri: item.fileUrl }} style={styles.mediaImage} />
+            </View>
+          );
+        
+        case 'video':
+          return (
+            <View style={styles.mediaContainer}>
+              <Image source={{ uri: item.fileUrl }} style={styles.mediaImage} />
+              <View style={styles.videoOverlay}>
+                <Ionicons name="play-circle" size={40} color="#FFFFFF" />
+              </View>
+              {item.duration && (
+                <View style={styles.durationBadge}>
+                  <Text style={styles.durationText}>{Math.floor(item.duration / 60)}:{(item.duration % 60).toString().padStart(2, '0')}</Text>
+                </View>
+              )}
+            </View>
+          );
+        
+        default:
+          return (
+            <Text style={[styles.messageText, isMine ? styles.myMessageText : styles.otherMessageText]}>
+              {item.messageContent}
+            </Text>
+          );
+      }
+    };
+
     return (
       <View style={[styles.messageContainer, isMine ? styles.myMessage : styles.otherMessage]}>
         {!isMine && (
@@ -251,9 +354,7 @@ export default function ChatsManagement(_: Props) {
         )}
         
         <View style={[styles.messageBubble, isMine ? styles.myBubble : styles.otherBubble]}>
-          <Text style={[styles.messageText, isMine ? styles.myMessageText : styles.otherMessageText]}>
-            {item.messageContent}
-          </Text>
+          {renderMessageContent()}
           <Text style={[styles.messageTime, isMine ? styles.myMessageTime : styles.otherMessageTime]}>
             {new Date(item.createdAt).toLocaleTimeString('ar-SA', { 
               hour: '2-digit', 
@@ -296,7 +397,9 @@ export default function ChatsManagement(_: Props) {
             )}
             
             {/* Online Status Indicator */}
-            <View style={styles.onlineIndicator} />
+            <View style={styles.onlineIndicator}>
+              <View style={styles.onlineIndicatorInner} />
+            </View>
             
             {/* Unread Badge */}
             {hasUnread && (
@@ -482,13 +585,6 @@ export default function ChatsManagement(_: Props) {
 
           {/* Messages Area */}
           <View style={styles.messagesArea}>
-            {loadingMessages && (
-              <View style={styles.loadingMessagesContainer}>
-                <ActivityIndicator size="small" color="#FF6B35" />
-                <Text style={styles.loadingMessagesText}>جاري تحميل الرسائل...</Text>
-              </View>
-            )}
-            
             <FlatList
               data={messages}
               keyExtractor={(item) => item.id}
@@ -514,8 +610,39 @@ export default function ChatsManagement(_: Props) {
 
           {/* Enhanced Message Input */}
           <View style={styles.inputArea}>
+            {/* Attachments Menu */}
+            {showAttachments && (
+              <View style={styles.attachmentsMenu}>
+                <TouchableOpacity style={styles.attachmentOption} onPress={pickImage}>
+                  <View style={styles.attachmentIconContainer}>
+                    <Ionicons name="image" size={24} color="#FF6B35" />
+                  </View>
+                  <Text style={styles.attachmentText}>صورة</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity style={styles.attachmentOption} onPress={pickVideo}>
+                  <View style={styles.attachmentIconContainer}>
+                    <Ionicons name="videocam" size={24} color="#FF6B35" />
+                  </View>
+                  <Text style={styles.attachmentText}>فيديو</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            
             <View style={styles.inputContainer}>
               <View style={styles.inputWrapper}>
+                <TouchableOpacity 
+                  style={styles.attachmentButton}
+                  onPress={() => setShowAttachments(!showAttachments)}
+                  disabled={uploadingMedia}
+                >
+                  <Ionicons 
+                    name={showAttachments ? "close" : "add"} 
+                    size={24} 
+                    color={uploadingMedia ? "#9CA3AF" : "#FF6B35"} 
+                  />
+                </TouchableOpacity>
+                
                 <TextInput
                   style={styles.messageInput}
                   value={newMessage}
@@ -528,10 +655,10 @@ export default function ChatsManagement(_: Props) {
                 
                 <TouchableOpacity 
                   onPress={handleSend} 
-                  disabled={!newMessage.trim() || sending} 
-                  style={[styles.sendButton, (!newMessage.trim() || sending) && styles.sendButtonDisabled]}
+                  disabled={!newMessage.trim() || sending || uploadingMedia} 
+                  style={[styles.sendButton, (!newMessage.trim() || sending || uploadingMedia) && styles.sendButtonDisabled]}
                 >
-                  {sending ? (
+                  {sending || uploadingMedia ? (
                     <ActivityIndicator size="small" color="#FFFFFF" />
                   ) : (
                     <LinearGradient
@@ -543,6 +670,13 @@ export default function ChatsManagement(_: Props) {
                   )}
                 </TouchableOpacity>
               </View>
+              
+              {uploadingMedia && (
+                <View style={styles.uploadingIndicator}>
+                  <ActivityIndicator size="small" color="#FF6B35" />
+                  <Text style={styles.uploadingText}>جاري رفع الملف...</Text>
+                </View>
+              )}
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -697,9 +831,17 @@ const styles = StyleSheet.create({
     width: 16,
     height: 16,
     borderRadius: 8,
-    backgroundColor: '#10B981',
+    backgroundColor: '#FFFFFF',
     borderWidth: 2,
-    borderColor: '#FFFFFF',
+    borderColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  onlineIndicatorInner: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10B981',
   },
   unreadBadge: {
     position: 'absolute',
@@ -898,20 +1040,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F8FAFC',
   },
-  loadingMessagesContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 16,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
-  },
-  loadingMessagesText: {
-    marginLeft: 8,
-    fontSize: 14,
-    color: '#6B7280',
-  },
   messagesList: {
     flex: 1,
   },
@@ -994,6 +1122,41 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     textAlign: 'left',
   },
+  mediaContainer: {
+    position: 'relative',
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: 4,
+  },
+  mediaImage: {
+    width: screenWidth * 0.5,
+    height: screenWidth * 0.4,
+    borderRadius: 12,
+  },
+  videoOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  durationBadge: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  durationText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '500',
+  },
   emptyMessagesContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -1025,30 +1188,68 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderTopWidth: 1,
     borderTopColor: '#E5E7EB',
+  },
+  attachmentsMenu: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    backgroundColor: '#F9FAFB',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+    justifyContent: 'space-around',
+  },
+  attachmentOption: {
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  attachmentIconContainer: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  attachmentText: {
+    fontSize: 12,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  inputContainer: {
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
-  inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
+  attachmentButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
   },
   inputWrapper: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'flex-end',
     backgroundColor: '#F9FAFB',
     borderRadius: 24,
     borderWidth: 1,
     borderColor: '#E5E7EB',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
   },
   messageInput: {
     flex: 1,
     fontSize: 16,
     color: '#1F2937',
     maxHeight: 100,
-    paddingVertical: 8,
+    paddingVertical: 12,
   },
   sendButton: {
     width: 40,
@@ -1056,7 +1257,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: 8,
+    marginLeft: 12,
   },
   sendButtonDisabled: {
     opacity: 0.5,
@@ -1067,5 +1268,17 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  uploadingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+  },
+  uploadingText: {
+    marginLeft: 8,
+    fontSize: 14,
+    color: '#FF6B35',
+    fontWeight: '500',
   },
 });
