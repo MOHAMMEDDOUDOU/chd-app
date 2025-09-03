@@ -39,6 +39,7 @@ export default function ChatsManagement(_: Props) {
   const [sending, setSending] = useState(false);
   const [showAttachments, setShowAttachments] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
 
   useEffect(() => {
     loadConversations();
